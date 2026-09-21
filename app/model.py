@@ -115,6 +115,8 @@ class LoanModel:
                 korean_key = key  # ex) age
             result[korean_key] = value
 
+
+
         return result
 
     def predict(self, data: dict[str, Any]) -> dict[str, Any]:
@@ -143,3 +145,67 @@ class LoanModel:
         #   클래스 1(승인)의 확률 열을 의미한다.
         #   0번 열은 0 -> 거절 확률을 의미한다.
         probability = float(self.pipeline.predict_proba(df)[0, 1])
+
+        # 확률을 정책 임계값과 비교해 최종 승인 여부를 결정한다.
+        approved = probability >= self.threshold
+        risk_grade = self._get_risk_grade(probability)
+
+        return {
+            'approved': approved,
+            'probability': probability,
+            'risk_grade': risk_grade
+        }
+        
+
+    @staticmethod
+    def _get_risk_grade(probability: float) -> str:
+        """
+        승인 확률 구간을 사람이 해석하기 쉬운 A~D 등급으로 변환한다.
+        """
+        if probability >= 0.75:
+            return 'A'
+        elif probability >= 0.5:
+            return 'B'
+        elif probability >= 0.25:
+            return 'C'
+        else:
+            return 'D'
+
+    # ---------------------------------------------------------------------------
+    # 배치 예측용 메서드 (신규 추가)
+    # ---------------------------------------------------------------------------
+    def predict_batch(self, data_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        여러 명의 입력을 한 번에 전처리하고, 승인 확률과 위험 등급을 계산한다.
+        
+        """
+        if self.pipeline is None:
+            raise RuntimeError('모델이 로드되지 않았습니다. load() 함수를 먼저 호출하세요!')
+
+        if not data_list:
+            return []
+
+        mapped_list = [self._map_to_korean(data) for data in data_list]  # n개의 한글 dict
+
+        # 학습을 진행할 데이터프레임 생성
+        df = pd.DataFrame(mapped_list)[self.feature_names]
+
+        # 학습 때 저장한 LabelEncoder를 동일 컬럼에 적용
+        for col, encoder in self.label_encoders.items():
+            df[col] = encoder.transform(df[col])
+
+        # predict_proba를 n행짜리 df에 "한 번만 호출" --> [:, 1]로 승인(1) 확률 열만 꺼낸다.
+        probabilities = self.pipeline.predict_proba(df)[:, 1]
+
+        results = []        
+        for probability in probabilities:
+            probability = float(probability) # 실수형으로 변환해서 저장
+            approved = (probability >= self.threshold)
+            risk_grade = self._get_risk_grade(probability)
+            results.append({
+                'approved': approved,
+                'probability': probability,
+                'risk_grade': risk_grade
+            })
+        return results
+        
